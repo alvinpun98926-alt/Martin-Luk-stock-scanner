@@ -43,9 +43,11 @@ MKTCAP_MIN  = 100e6     # 市值下限（USD）
 DVOL_MIN    = 50e6      # 價×量 下限（USD）
 VOL_MIN     = 3.5       # 週波動率下限（%）
 AVGVOL_MIN  = 500_000   # 10日平均成交量下限（股數）— 對應 TradingView「平均成交量,10天」
+VOL_DAYS    = 5         # 「一週」用幾多個交易日（TradingView 約為 5）
 AVGVOL_STAT = "median"  # "median" = 10日中位數（穩健，唔會被單日爆量拉高，建議）
                         # "mean"   = 10日算術平均（同 TradingView 一致）
-VOL_METHOD  = "range"   # "range" = 近5日 (high-low)/low ; "adr" = 近5日平均日內幅度%
+VOL_METHOD  = "tv"      # "tv"    = TradingView 官方口徑（過去一週每日 (高-低)/低 % 嘅平均）★建議
+                        # "range" = 近5日總區間 (最高-最低)/最低 %（數值會大好多，會過度寬鬆）
 DVOL_BASIS  = "avg20"   # "avg20" = 20日平均價×量（較貼近 TradingView）; "latest" = 最近一日
 EMA_FAST    = 9
 EMA_MID     = 21
@@ -94,14 +96,27 @@ def ema_last(closes, n):
 
 
 def weekly_vol(df):
-    last5 = df.tail(5)
-    if VOL_METHOD == "adr":
-        lows = last5["Low"]
-        if (lows <= 0).any():
-            return 0.0
-        return float(((last5["High"] / lows) - 1).mean() * 100)
-    hi, lo = float(last5["High"].max()), float(last5["Low"].min())
-    return (hi - lo) / lo * 100 if lo > 0 else 0.0
+    """
+    TradingView Screener「波動率 1週」官方公式：
+        sum((high - low) / abs(low) * 100 / n, n)
+    即係過去一週（n 個交易日）每日 (高-低)/低 × 100 嘅平均值。
+    """
+    n = min(VOL_DAYS, len(df))
+    if n <= 0:
+        return 0.0
+    last = df.tail(n)
+    highs = last["High"].astype(float)
+    lows = last["Low"].astype(float)
+
+    if VOL_METHOD == "range":          # 舊口徑：整週總區間（會偏大）
+        hi, lo = float(highs.max()), float(lows.min())
+        return (hi - lo) / lo * 100 if lo > 0 else 0.0
+
+    # TradingView 口徑（"tv" / "adr" 等價）
+    denom = lows.abs()
+    if (denom <= 0).any():
+        return 0.0
+    return float(((highs - lows) / denom * 100).mean())
 
 
 def dollar_vol(df):
