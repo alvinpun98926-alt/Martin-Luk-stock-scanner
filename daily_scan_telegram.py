@@ -38,6 +38,8 @@ BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "")
 CHAT_ID   = os.environ.get("TG_CHAT_ID", "")
 
 MAX_PER_MSG = 3500   # Telegram 單則上限 4096 字，留啲位；超過會自動分段
+AUTO_UNIVERSE = True   # True = 每日自動抓全美股做 screener（唔使理 tickers.txt）
+                       # False = 只掃描 tickers.txt 入面嘅股票
 SKIP_WEEKEND = True  # 美股週末自動跳過（唔使抓資料，慳時間）
 NOTIFY_HOLIDAY = True  # 休市／冇新資料時，仍然傳一則通知（False = 靜靜哋唔傳）
 # ============================================================
@@ -181,15 +183,26 @@ def main():
     stamp = now_tpe().strftime("%Y-%m-%d")
     print(f"[{stamp}] 開始每日掃描…")
 
-    # ---- 讀 tickers ----
-    tpath = Path(__file__).resolve().parent / "tickers.txt"
-    if not tpath.exists():
-        tg_send(f"⚠️ Scanner 出錯（{stamp}）：搵唔到 tickers.txt")
-        sys.exit("搵唔到 tickers.txt")
-    tickers = cw.parse_tickers(tpath.read_text(encoding="utf-8"))
+    # ---- 取得 universe ----
+    preset_caps = None
+    if AUTO_UNIVERSE:
+        print("抓取全美股 universe…")
+        try:
+            import fetch_universe
+            tickers, preset_caps = fetch_universe.fetch_universe(
+                mktcap_min=cw.MKTCAP_MIN)
+        except Exception as e:
+            tg_send(f"⚠️ Scanner 出錯（{stamp}）：抓 universe 失敗 {e}")
+            raise
+    else:
+        tpath = Path(__file__).resolve().parent / "tickers.txt"
+        if not tpath.exists():
+            tg_send(f"⚠️ Scanner 出錯（{stamp}）：搵唔到 tickers.txt")
+            sys.exit("搵唔到 tickers.txt")
+        tickers = cw.parse_tickers(tpath.read_text(encoding="utf-8"))
     if not tickers:
-        tg_send(f"⚠️ Scanner 出錯（{stamp}）：tickers.txt 冇有效代號")
-        sys.exit("tickers.txt 冇有效代號")
+        tg_send(f"⚠️ Scanner 出錯（{stamp}）：冇有效代號")
+        sys.exit("冇有效代號")
     print(f"共 {len(tickers)} 隻")
 
     # ---- 週末快速判斷：台北星期日/星期一 = 美股週末，唔使抓資料 ----
@@ -205,7 +218,11 @@ def main():
     # ---- 抓資料 + 分類（重用主程式邏輯）----
     try:
         frames = cw.download_history(tickers)
-        caps = cw.fetch_market_caps(tickers) if cw.CHECK_MKTCAP else {s: None for s in tickers}
+        # 自動 universe 已含市值，唔使再逐隻查（慳幾千個 request）
+        if preset_caps is not None:
+            caps = preset_caps
+        else:
+            caps = cw.fetch_market_caps(tickers) if cw.CHECK_MKTCAP else {s: None for s in tickers}
         rows = [cw.classify(s, frames.get(s), caps.get(s)) for s in tickers]
     except Exception as e:
         tg_send(f"⚠️ Scanner 出錯（{stamp}）：{e}")
