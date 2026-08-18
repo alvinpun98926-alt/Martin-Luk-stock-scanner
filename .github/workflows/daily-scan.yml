@@ -1,0 +1,44 @@
+name: Daily Stock Scan
+
+on:
+  schedule:
+    # GitHub 用 UTC 時間。台北 07:30 = UTC 23:30（前一日）
+    - cron: '30 23 * * *'
+  workflow_dispatch:        # 允許喺網頁手動撳掣即刻跑（測試用）
+
+permissions:
+  contents: write           # 需要寫返 out/.last_session 落 repo
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+
+      - name: 安裝 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 安裝套件
+        run: |
+          python -m pip install --upgrade pip
+          pip install -U yfinance pandas
+
+      - name: 執行掃描並傳去 Telegram
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: python daily_scan_telegram.py
+
+      - name: 儲存執行狀態
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add -A out/ || true
+          git diff --staged --quiet || git commit -m "掃描結果 $(date -u +'%Y-%m-%d')"
+          git push || true
