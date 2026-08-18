@@ -93,7 +93,10 @@ def ema_last(closes, n):
 def weekly_vol(df):
     last5 = df.tail(5)
     if VOL_METHOD == "adr":
-        return float(((last5["High"] / last5["Low"]) - 1).mean() * 100)
+        lows = last5["Low"]
+        if (lows <= 0).any():
+            return 0.0
+        return float(((last5["High"] / lows) - 1).mean() * 100)
     hi, lo = float(last5["High"].max()), float(last5["Low"].min())
     return (hi - lo) / lo * 100 if lo > 0 else 0.0
 
@@ -189,18 +192,36 @@ def download_history(tickers, verbose=True):
 
 
 def classify(sym, df, mktcap):
-    if df is None or len(df) < EMA_SLOW:
-        n = 0 if df is None else len(df)
-        return {"sym": sym, "error": True,
-                "msg": f"資料不足（{n} 根 K，需 ≥ {EMA_SLOW}）" if n else "搵唔到資料 / 代號錯"}
+    if df is None or len(df) == 0:
+        return {"sym": sym, "error": True, "msg": "搵唔到資料 / 代號錯"}
 
-    closes = df["Close"].tolist()
+    # 只保留 Close/High/Low/Volume 都有效嘅列（停牌、新上市會有空值）
+    try:
+        df = df.dropna(subset=["Close", "High", "Low", "Volume"])
+    except Exception:
+        return {"sym": sym, "error": True, "msg": "資料格式異常"}
+
+    if len(df) < EMA_SLOW:
+        return {"sym": sym, "error": True,
+                "msg": f"資料不足（{len(df)} 根有效 K，需 ≥ {EMA_SLOW}）"}
+
+    closes = [float(c) for c in df["Close"].tolist()]
     price  = float(df["Close"].iloc[-1])
     e1 = ema_last(closes, EMA_FAST)
     e2 = ema_last(closes, EMA_MID)
     e3 = ema_last(closes, EMA_SLOW)
-    dvol = dollar_vol(df)
-    wvol = weekly_vol(df)
+
+    if e1 is None or e2 is None or e3 is None or price <= 0:
+        return {"sym": sym, "error": True, "msg": "EMA 計唔到（有效資料不足）"}
+
+    try:
+        dvol = dollar_vol(df)
+        wvol = weekly_vol(df)
+    except Exception:
+        return {"sym": sym, "error": True, "msg": "成交額/波動率計唔到"}
+
+    if not (math.isfinite(dvol) and math.isfinite(wvol)):
+        return {"sym": sym, "error": True, "msg": "成交額/波動率數值異常"}
 
     reasons = []
     if CHECK_MKTCAP:
