@@ -42,8 +42,11 @@ except ImportError:
 MKTCAP_MIN  = 100e6     # 市值下限（USD）
 DVOL_MIN    = 50e6      # 價×量 下限（USD）
 VOL_MIN     = 3.5       # 週波動率下限（%）
+AVGVOL_MIN  = 500_000   # 10日平均成交量下限（股數）— 對應 TradingView「平均成交量,10天」
+AVGVOL_STAT = "median"  # "median" = 10日中位數（穩健，唔會被單日爆量拉高，建議）
+                        # "mean"   = 10日算術平均（同 TradingView 一致）
 VOL_METHOD  = "range"   # "range" = 近5日 (high-low)/low ; "adr" = 近5日平均日內幅度%
-DVOL_BASIS  = "latest"  # "latest" = 最近一日價×量 ; "avg20" = 20日平均
+DVOL_BASIS  = "avg20"   # "avg20" = 20日平均價×量（較貼近 TradingView）; "latest" = 最近一日
 EMA_FAST    = 9
 EMA_MID     = 21
 EMA_SLOW    = 50        # 你嘅分級條件用 50；若 Martin Luk 實際用 40 就改呢度
@@ -217,6 +220,8 @@ def classify(sym, df, mktcap):
     try:
         dvol = dollar_vol(df)
         wvol = weekly_vol(df)
+        v10 = df["Volume"].tail(10)
+        avgvol = float(v10.median() if AVGVOL_STAT == "median" else v10.mean())
     except Exception:
         return {"sym": sym, "error": True, "msg": "成交額/波動率計唔到"}
 
@@ -233,6 +238,8 @@ def classify(sym, df, mktcap):
         reasons.append(f"價 ≤ EMA{EMA_MID}")
     if not (dvol > DVOL_MIN):
         reasons.append(f"價×量 {fmt_big(dvol)} ≤ {fmt_big(DVOL_MIN)}")
+    if AVGVOL_MIN > 0 and not (avgvol > AVGVOL_MIN):
+        reasons.append(f"10日均量 {fmt_big(avgvol)} ≤ {fmt_big(AVGVOL_MIN)}")
     if not (wvol > VOL_MIN):
         reasons.append(f"波動率 {wvol:.2f}% ≤ {VOL_MIN}%")
 
@@ -246,7 +253,7 @@ def classify(sym, df, mktcap):
 
     return {"sym": sym, "error": False, "price": price,
             "e1": e1, "e2": e2, "e3": e3,
-            "mktcap": mktcap, "dvol": dvol, "wvol": wvol,
+            "mktcap": mktcap, "dvol": dvol, "wvol": wvol, "avgvol": avgvol,
             "qualified": qualified, "reasons": reasons, "tier": tier,
             "ext": (price / e2 - 1) * 100}
 
@@ -310,11 +317,11 @@ def main():
         w = csv.writer(f)
         w.writerow(["symbol", "tier", "qualified", "price",
                     f"ema{EMA_FAST}", f"ema{EMA_MID}", f"ema{EMA_SLOW}",
-                    "marketCap", "dollarVol", "weeklyVol%", "ext%", "reasons"])
+                    "marketCap", "dollarVol", "avgVol10", "weeklyVol%", "ext%", "reasons"])
         for r in lead + med + lag + dropped:
             w.writerow([r["sym"], r["tier"], "Y" if r["qualified"] else "N",
                         f"{r['price']:.4f}", f"{r['e1']:.4f}", f"{r['e2']:.4f}",
-                        f"{r['e3']:.4f}", int(r["mktcap"] or 0), int(r["dvol"]),
+                        f"{r['e3']:.4f}", int(r["mktcap"] or 0), int(r["dvol"]), int(r.get("avgvol") or 0),
                         f"{r['wvol']:.2f}", f"{r['ext']:.2f}", "；".join(r["reasons"])])
 
     print(f"\n已寫入 out/watchlist_tiers.csv 及 out/lead|mediocre|lag|dropped.txt\n")
