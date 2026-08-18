@@ -50,8 +50,9 @@ EMA_SLOW    = 50        # 你嘅分級條件用 50；若 Martin Luk 實際用 40
 CHECK_MKTCAP = True     # False = 完全唔理市值（screener 上游已篩過嘅話可關掉提速）
 
 PERIOD      = "1y"      # 抓一年日線，計 EMA50 + 20日平均綽綽有餘
-CHUNK       = 120       # 每次 bulk download 嘅股票數
-MAX_WORKERS = 8         # 抓市值嘅併發數
+CHUNK       = 100       # 每次 bulk download 嘅股票數
+MAX_WORKERS = 6         # 抓市值嘅併發數（自動 universe 模式下用唔著）
+PAUSE       = 1.0       # 每批之間停幾多秒（大量股票時避免被 Yahoo 限流）
 # ============================================================
 
 
@@ -136,38 +137,54 @@ def fetch_market_caps(tickers):
     return caps
 
 
-def download_history(tickers):
-    """分批 bulk download，回傳 {sym: DataFrame}。"""
+def download_history(tickers, verbose=True):
+    """
+    分批 bulk download，回傳 {sym: DataFrame}。
+    針對大量股票（4000+）做咗加固：分批、重試、失敗批次縮細再試。
+    """
     frames = {}
-    for i in range(0, len(tickers), CHUNK):
-        batch = tickers[i:i + CHUNK]
-        print(f"  抓價量 {i+1}-{i+len(batch)} / {len(tickers)} …", flush=True)
+    total = len(tickers)
+    batches = [tickers[i:i + CHUNK] for i in range(0, total, CHUNK)]
+
+    def grab(batch, attempt=1):
+        """抓一批；失敗會重試，再唔得就拆細。"""
         try:
             data = yf.download(batch, period=PERIOD, interval="1d",
                                auto_adjust=True, group_by="ticker",
                                threads=True, progress=False)
         except Exception as e:
-            print(f"    這批失敗（{e}），稍候重試一次")
-            time.sleep(2)
-            try:
-                data = yf.download(batch, period=PERIOD, interval="1d",
-                                   auto_adjust=True, group_by="ticker",
-                                   threads=True, progress=False)
-            except Exception:
-                continue
+            if attempt < 3:
+                time.sleep(3 * attempt)
+                return grab(batch, attempt + 1)
+            if len(batch) > 10:                      # 拆細再試
+                mid = len(batch) // 2
+                grab(batch[:mid]); time.sleep(1); grab(batch[mid:])
+                return
+            print(f"    放棄呢批（{len(batch)} 隻）：{e}")
+            return
+
         if len(batch) == 1:
             df = data.dropna(how="all")
             if not df.empty:
                 frames[batch[0]] = df
-        else:
-            for sym in batch:
-                try:
-                    df = data[sym].dropna(how="all")
-                    if not df.empty:
-                        frames[sym] = df
-                except Exception:
-                    pass
-        time.sleep(0.5)  # 對 Yahoo 客氣啲
+            return
+        for sym in batch:
+            try:
+                df = data[sym].dropna(how="all")
+                if not df.empty:
+                    frames[sym] = df
+            except Exception:
+                pass
+
+    for i, batch in enumerate(batches, 1):
+        if verbose:
+            done = min(i * CHUNK, total)
+            print(f"  抓價量 {done} / {total}　（第 {i}/{len(batches)} 批）", flush=True)
+        grab(batch)
+        time.sleep(PAUSE)          # 對 Yahoo 客氣啲，減少被限流
+
+    if verbose:
+        print(f"  成功取得 {len(frames)} / {total} 隻")
     return frames
 
 
